@@ -1,0 +1,93 @@
+/* ──────────────────────────────────────────────
+   EVGuard — Global Styles
+   ────────────────────────────────────────────── */
+
+/* Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* Tailwind Base */
+@import "tailwindcss";
+@config "../../tailwind.config.js";
+
+/* ── Base Styles ────────────────────────────── */
+html {
+  background-color: #0A0A0F;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #F1F5F9;
+  background-color: #0A0A0F;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Custom Scrollbar ───────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0A0A0F;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2A2A3A;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6366F1;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2A2A3A #0A0A0F;
+}
+
+/* ── Selection Color ────────────────────────── */
+::selection {
+  background-color: rgba(99, 102, 241, 0.3);
+  color: #F1F5F9;
+}
+
+::-moz-selection {
+  background-color: rgba(99, 102, 241, 0.3);
+  color: #F1F5F9;
+}
+
+/* ── Utility Classes ────────────────────────── */
+.glass {
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  @apply backdrop-blur-xl;
+}
+
+.glass-hover {
+  @apply transition-all duration-300;
+}
+.glass-hover:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.gradient-text {
+  @apply bg-clip-text text-transparent bg-gradient-to-r from-accent to-purple-400;
+}
+
+.gradient-border {
+  @apply border border-transparent;
+  background: linear-gradient(#111118, #111118) padding-box,
+              linear-gradient(135deg, #6366F1, #A855F7) border-box;
+}
+
+.section-padding {
+  @apply px-4 sm:px-6 lg:px-8 py-16 md:py-24;
+}
+
+.max-container {
+  @apply max-w-7xl mx-auto;
+}

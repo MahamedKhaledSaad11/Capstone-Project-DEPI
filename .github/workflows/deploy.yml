@@ -1,0 +1,91 @@
+# ──────────────────────────────────────────────
+# EVGuard — CI/CD Pipeline
+# ──────────────────────────────────────────────
+
+name: EVGuard CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-backend:
+    name: Test Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify model loads
+        run: |
+          python -c "
+          import joblib, json
+          pipeline = joblib.load('app/models/lgbm_pipeline.joblib')
+          assert 'scaler' in pipeline
+          assert 'model' in pipeline
+          print('Model loaded successfully')
+
+          with open('app/models/model_metadata.json') as f:
+              meta = json.load(f)
+          assert meta['version'] == '1.0.0'
+          print(f'Model version: {meta[\"version\"]}')
+          print(f'Features: {meta[\"feature_count\"]}')
+          "
+
+      - name: Test health endpoint
+        run: |
+          python -c "
+          from app.main import app
+          from fastapi.testclient import TestClient
+          with TestClient(app) as client:
+              resp = client.get('/api/v1/health')
+              assert resp.status_code == 200
+              data = resp.json()
+              assert data['model_loaded'] == True
+              print(f'Health check passed: {data}')
+          "
+
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+        env:
+          VITE_API_URL: https://evguard-api.onrender.com
+
+      - name: Verify build output
+        run: |
+          test -d dist
+          test -f dist/index.html
+          echo "Build successful!"
+          ls -la dist/

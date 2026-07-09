@@ -1,0 +1,31 @@
+# ──────────────────────────────────────────────
+# EVGuard — Docker Compose (Local Development)
+# ──────────────────────────────────────────────
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./backend/app:/app/app
+    environment:
+      - ENV=development
+      - MODEL_PATH=./app/models/lgbm_pipeline.joblib
+      - METADATA_PATH=./app/models/model_metadata.json
+      - ALLOWED_ORIGINS=*
+      - PORT=8000
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    restart: unless-stopped

@@ -1,0 +1,23 @@
+# ──────────────────────────────────────────────
+# EVGuard — Render Deployment Configuration
+# ──────────────────────────────────────────────
+
+services:
+  - type: web
+    name: evguard-api
+    env: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENV
+        value: production
+      - key: MODEL_PATH
+        value: ./app/models/lgbm_pipeline.joblib
+      - key: METADATA_PATH
+        value: ./app/models/model_metadata.json
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: LOG_LEVEL
+        value: WARNING
+      - key: PYTHON_VERSION
+        value: 3.11.0
