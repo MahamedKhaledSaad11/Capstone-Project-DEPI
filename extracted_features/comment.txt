@@ -1,1 +1,28 @@
-This is where we will put our extracted features data, most likely after running PCA
+This is where we will put our extracted features data, most likely after running PCA.
+
+The 25 features used for training the model are:
+1. speed_kmh
+2. distance_m
+3. soc_pct
+4. battery_voltage_v
+5. battery_temp_c
+6. motor_rpm
+7. motor_temp_c
+8. power_kw
+9. ambient_temp_c
+10. load_kg
+11. power_to_load_ratio
+12. temp_diff_motor_ambient
+13. temp_diff_battery_ambient
+14. voltage_per_soc
+15. speed_x_load
+16. motor_temp_c_roll_mean
+17. motor_temp_c_roll_std
+18. battery_temp_c_roll_mean
+19. battery_temp_c_roll_std
+20. battery_voltage_v_roll_mean
+21. battery_voltage_v_roll_std
+22. power_kw_roll_mean
+23. power_kw_roll_std
+24. hour_of_day
+25. day_of_week
