@@ -64,7 +64,10 @@ ENV/
 /shelf/
 /httpRequests/
 /workspace.xml
-
+implementation_plan.md
+Frontend Documentation.md
+Backend and ML Pipeline.md
+cloudflared-windows-amd64.exe
 # VS Code
 .vscode/*
 !.vscode/extensions.json
