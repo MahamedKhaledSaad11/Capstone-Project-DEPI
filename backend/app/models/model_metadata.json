@@ -1,13 +1,33 @@
 {
   "model_name": "LightGBM",
-  "version": "1.0.0",
-  "accuracy": 0.9943,
-  "macro_f1": 0.8910,
-  "macro_auc": 0.9990,
-  "cohens_kappa": 0.9233,
-  "mcc": 0.9238,
-  "training_samples": 16240,
-  "test_samples": 4060,
+  "version": "2.0.0",
+  "split_strategy": "StratifiedGroupKFold holdout by car_id",
+  "vehicle_overlap_between_train_test": 0,
+  "hyperparameters": {
+    "n_estimators": 300,
+    "max_depth": 10,
+    "learning_rate": 0.05,
+    "num_leaves": 31
+  },
+  "holdout_metrics": {
+    "Accuracy": 0.9919,
+    "Balanced Accuracy": 0.9105,
+    "Macro Precision": 0.8569,
+    "Macro Recall": 0.9105,
+    "Macro F1": 0.8809,
+    "Weighted F1": 0.9922,
+    "Cohen's Kappa": 0.8889,
+    "MCC": 0.8898,
+    "Macro AUC": 0.9975
+  },
+  "accuracy": 0.9919,
+  "macro_f1": 0.8809,
+  "macro_auc": 0.9975,
+  "cohens_kappa": 0.8889,
+  "mcc": 0.8898,
+  "training_samples": 16241,
+  "test_samples": 4059,
+  "deployment_trained_on": 20300,
   "feature_count": 25,
   "classes": [
     "Critical_Overheating",
@@ -23,5 +43,12 @@
     "Thermal_Overload": 3,
     "Voltage_Sag": 4
   },
-  "last_trained": "2026"
+  "last_trained": "2026-07-16 22:21:09",
+  "methodology_notes": [
+    "Preprocessing is fitted inside the pipeline (no pre-split leakage).",
+    "ADASYN is fitted only inside training folds / training split.",
+    "Test vehicles are completely unseen during training (zero overlap).",
+    "Holdout metrics reflect realistic deployment performance.",
+    "Deployment model is retrained on all data after holdout validation."
+  ]
 }

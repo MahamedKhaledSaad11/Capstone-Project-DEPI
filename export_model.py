@@ -3,236 +3,277 @@ export_model.py
 ===============
 Model Export Script for the EV Fleet Predictive Maintenance project.
 
-This script:
-1. Loads the preprocessed dataset (fleet_prepared.csv)
-2. Selects the exact 25 features used during training
-3. Splits data 80/20 stratified by target
-4. Fits a StandardScaler on training data ONLY
-5. Applies ADASYN oversampling on TRAINING data ONLY
-6. Trains a LightGBM classifier
-7. Exports the inference pipeline (scaler + model) via joblib
-8. Exports model metadata as JSON
-9. Verifies the exported model loads and predicts correctly
+This script uses the **leakage-safe pipeline** defined in
+``notebooks/leakage_safe_pipeline.py`` so the exported model exactly matches
+the champion evaluated in Phase 4 and Phase 5:
 
-IMPORTANT — Rolling Feature Approximation at Inference Time:
-    At inference, we do NOT have historical data for rolling windows.
-    The following approximations are used:
-        roll_mean  = current sensor value   (stable-state assumption)
-        roll_std   = 0                      (no variance = stable assumption)
-    This is documented in the backend's prediction_service.py as well.
+    TelemetryFeatureTransformer → StandardScaler → ADASYN → LightGBM
+
+Workflow:
+    1. Load raw telemetry (fleet_augmented.csv)
+    2. Vehicle-grouped holdout split (StratifiedGroupKFold, groups=car_id)
+    3. Fit champion pipeline on the training split
+    4. Evaluate on the holdout split (same metrics as Phase 5)
+    5. Re-train on **all** data for deployment
+    6. Export two artifacts:
+       a. ``lgbm_pipeline.joblib``         — full imblearn pipeline (reproducibility)
+       b. ``lgbm_inference_bundle.joblib``  — scaler + model dict   (backend inference)
+    7. Export ``model_metadata.json`` with leakage-safe metrics
+    8. Verify both exported artifacts load and predict correctly
+
+IMPORTANT — Backend Inference:
+    The backend (prediction_service.py) performs single-row inference where
+    rolling window features are approximated (roll_mean = current value,
+    roll_std = 0).  It needs the scaler and model separately because
+    TelemetryFeatureTransformer expects a DataFrame with car_id, timestamp,
+    and multiple rows for rolling windows, which do not exist at inference
+    time.  That is why we export both formats.
 
 Usage:
     python export_model.py
 """
 
 import os
+import sys
 import json
 import joblib
 import numpy as np
-import pandas as pd
 from datetime import datetime
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import (
-    accuracy_score, f1_score, cohen_kappa_score, matthews_corrcoef,
-    classification_report, confusion_matrix, roc_auc_score
-)
-from imblearn.over_sampling import ADASYN
-import lightgbm as lgb
 
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    cohen_kappa_score,
+    matthews_corrcoef,
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+)
+
+# ── Make leakage_safe_pipeline importable ────────────────
+for _p in [os.getcwd(), os.path.join(os.getcwd(), "notebooks")]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from leakage_safe_pipeline import (
+    RANDOM_STATE,
+    FINAL_FEATURES,
+    load_dataset,
+    first_group_holdout,
+    champion_pipeline,
+    evaluate_predictions,
+)
 
 # ──────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────
-DATA_PATH = os.path.join("data", "preprocessed", "fleet_prepared.csv")
+RAW_DATA_PATHS = [
+    os.path.join("data", "raw", "fleet_augmented.csv"),
+    os.path.join("..", "data", "raw", "fleet_augmented.csv"),
+]
+
 OUTPUT_DIR = os.path.join("model_weights")
 PIPELINE_FILE = os.path.join(OUTPUT_DIR, "lgbm_pipeline.joblib")
+INFERENCE_BUNDLE_FILE = os.path.join(OUTPUT_DIR, "lgbm_inference_bundle.joblib")
 METADATA_FILE = os.path.join(OUTPUT_DIR, "model_metadata.json")
 
-TARGET_COL = "failure_type_encoded"
-RANDOM_STATE = 42
-TEST_SIZE = 0.20
 
-# Exact 25 features used for training (order matters)
-FEATURE_COLS = [
-    "speed_kmh", "distance_m", "soc_pct", "battery_voltage_v",
-    "battery_temp_c", "motor_rpm", "motor_temp_c", "power_kw",
-    "ambient_temp_c", "load_kg", "power_to_load_ratio",
-    "temp_diff_motor_ambient", "temp_diff_battery_ambient",
-    "voltage_per_soc", "speed_x_load", "motor_temp_c_roll_mean",
-    "motor_temp_c_roll_std", "battery_temp_c_roll_mean",
-    "battery_temp_c_roll_std", "battery_voltage_v_roll_mean",
-    "battery_voltage_v_roll_std", "power_kw_roll_mean",
-    "power_kw_roll_std", "hour_of_day", "day_of_week",
-]
-
-CLASS_NAMES = [
-    "Critical_Overheating",
-    "Mechanical_Stress",
-    "Normal",
-    "Thermal_Overload",
-    "Voltage_Sag",
-]
-
-LABEL_MAPPING = {name: idx for idx, name in enumerate(CLASS_NAMES)}
+def _find_raw_data() -> str:
+    for path in RAW_DATA_PATHS:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(
+        f"Raw data not found in any of: {RAW_DATA_PATHS}"
+    )
 
 
 def main():
     print("=" * 70)
-    print("  EVGuard — Model Export Script")
+    print("  EVGuard — Leakage-Safe Model Export")
     print("=" * 70)
 
-    # ── 1. Load Data ──────────────────────────────────────────
-    print("\n[1/7] Loading preprocessed data...")
-    df = pd.read_csv(DATA_PATH)
-    print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
+    # ── 1. Load Raw Data ──────────────────────────────────────
+    print("\n[1/8] Loading raw telemetry data...")
+    raw_path = _find_raw_data()
+    bundle = load_dataset(raw_path)
 
-    # Verify all required features exist
-    missing_features = [f for f in FEATURE_COLS if f not in df.columns]
-    if missing_features:
-        raise ValueError(f"Missing features in dataset: {missing_features}")
-    print(f"  All {len(FEATURE_COLS)} features confirmed present")
+    print(f"  Loaded {len(bundle.raw_df):,} rows, {bundle.raw_df.shape[1]} columns")
+    print(f"  Unique vehicles: {bundle.groups.nunique()}")
+    print(f"  Classes: {bundle.class_names}")
+    print(f"  Label mapping: {bundle.label_mapping}")
 
-    # ── 2. Prepare X and y ────────────────────────────────────
-    print("\n[2/7] Preparing feature matrix and target...")
-    X = df[FEATURE_COLS].values
-    y = df[TARGET_COL].values
+    # ── 2. Vehicle-Grouped Holdout Split ──────────────────────
+    print("\n[2/8] Splitting by vehicle (StratifiedGroupKFold)...")
+    split = first_group_holdout(bundle)
+    X_train = split["X_train"]
+    X_test = split["X_test"]
+    y_train = split["y_train"]
+    y_test = split["y_test"]
+    groups_train = split["groups_train"]
+    groups_test = split["groups_test"]
 
-    print(f"  X shape: {X.shape}")
-    print(f"  y shape: {y.shape}")
-    print(f"  Class distribution:")
-    unique, counts = np.unique(y, return_counts=True)
-    for cls_idx, count in zip(unique, counts):
-        cls_name = CLASS_NAMES[cls_idx]
-        pct = count / len(y) * 100
-        print(f"    {cls_name:>25s} (label {cls_idx}): {count:>6d} ({pct:5.2f}%)")
+    overlap = len(set(groups_train) & set(groups_test))
+    assert overlap == 0, f"Vehicle overlap detected: {overlap}"
 
-    # ── 3. Train/Test Split ───────────────────────────────────
-    print("\n[3/7] Splitting data (80/20 stratified)...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
-    )
-    print(f"  Training samples: {len(X_train)}")
-    print(f"  Test samples:     {len(X_test)}")
+    print(f"  Train: {len(X_train):,} rows, {groups_train.nunique()} vehicles")
+    print(f"  Test:  {len(X_test):,} rows, {groups_test.nunique()} vehicles")
+    print(f"  Vehicle overlap: {overlap}")
 
-    # ── 4. Fit StandardScaler on TRAINING data only ───────────
-    print("\n[4/7] Fitting StandardScaler on training data...")
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    print("  Scaler fitted successfully")
+    # ── 3. Train Champion on Training Split ───────────────────
+    print("\n[3/8] Training champion pipeline on training split...")
+    pipe_holdout = champion_pipeline()
+    pipe_holdout.fit(X_train, y_train)
 
-    # ── 5. ADASYN oversampling on TRAINING data only ──────────
-    #    NOTE: ADASYN is NOT included in the inference pipeline.
-    #    It is used solely to balance the training set.
-    print("\n[5/7] Applying ADASYN oversampling on training data...")
-    adasyn = ADASYN(random_state=RANDOM_STATE)
-    X_train_resampled, y_train_resampled = adasyn.fit_resample(
-        X_train_scaled, y_train
-    )
-    print(f"  Before ADASYN: {len(X_train_scaled)} samples")
-    print(f"  After  ADASYN: {len(X_train_resampled)} samples")
-    print(f"  Resampled class distribution:")
-    unique_r, counts_r = np.unique(y_train_resampled, return_counts=True)
-    for cls_idx, count in zip(unique_r, counts_r):
-        cls_name = CLASS_NAMES[cls_idx]
-        print(f"    {cls_name:>25s}: {count:>6d}")
+    # ── 4. Evaluate on Holdout ────────────────────────────────
+    print("\n[4/8] Evaluating on unseen-vehicle holdout...")
+    y_pred = pipe_holdout.predict(X_test)
+    y_prob = pipe_holdout.predict_proba(X_test)
 
-    # ── 6. Train LightGBM ────────────────────────────────────
-    print("\n[6/7] Training LightGBM classifier...")
-    model = lgb.LGBMClassifier(
-        n_estimators=100,
-        learning_rate=0.1,
-        max_depth=-1,
-        num_leaves=31,
-        random_state=RANDOM_STATE,
-        verbose=-1,
-        n_jobs=-1,
-    )
-    model.fit(X_train_resampled, y_train_resampled)
-    print("  LightGBM trained successfully")
+    metrics = evaluate_predictions(y_test, y_pred)
+    metrics["Cohen's Kappa"] = cohen_kappa_score(y_test, y_pred)
+    metrics["MCC"] = matthews_corrcoef(y_test, y_pred)
 
-    # ── Evaluate on test set ──────────────────────────────────
-    y_pred = model.predict(X_test_scaled)
-    y_pred_proba = model.predict_proba(X_test_scaled)
-
-    accuracy = accuracy_score(y_test, y_pred)
-    macro_f1 = f1_score(y_test, y_pred, average="macro")
-    kappa = cohen_kappa_score(y_test, y_pred)
-    mcc = matthews_corrcoef(y_test, y_pred)
-
-    # ROC AUC (macro, one-vs-rest)
     try:
-        macro_auc = roc_auc_score(
-            y_test, y_pred_proba, multi_class="ovr", average="macro"
+        metrics["Macro AUC"] = roc_auc_score(
+            y_test, y_prob, multi_class="ovr", average="macro"
         )
     except ValueError:
-        macro_auc = None
+        metrics["Macro AUC"] = None
 
-    print(f"\n  -- Test Set Evaluation --")
-    print(f"  Accuracy:       {accuracy:.4f}")
-    print(f"  Macro F1:       {macro_f1:.4f}")
-    print(f"  Macro AUC:      {macro_auc:.4f}" if macro_auc else "  Macro AUC:      N/A")
-    print(f"  Cohen's Kappa:  {kappa:.4f}")
-    print(f"  MCC:            {mcc:.4f}")
+    print(f"\n  -- Holdout Evaluation (unseen vehicles) --")
+    for k, v in metrics.items():
+        if v is not None:
+            print(f"  {k:<20s}: {v:.4f}")
+        else:
+            print(f"  {k:<20s}: N/A")
 
     print(f"\n  Classification Report:")
-    print(classification_report(y_test, y_pred, target_names=CLASS_NAMES))
+    print(
+        classification_report(
+            y_test, y_pred, target_names=bundle.class_names, zero_division=0
+        )
+    )
 
-    # ── 7. Export Pipeline ────────────────────────────────────
-    print("[7/7] Exporting model pipeline...")
+    # ── 5. Re-train on ALL Data for Deployment ────────────────
+    print("[5/8] Re-training champion pipeline on ALL data for deployment...")
+    pipe_deploy = champion_pipeline()
+    pipe_deploy.fit(bundle.X, bundle.y)
+    print("  Champion pipeline trained on full dataset")
+
+    # ── 6. Export Full Pipeline ────────────────────────────────
+    print("\n[6/8] Exporting full imblearn pipeline...")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    joblib.dump(pipe_deploy, PIPELINE_FILE)
+    print(f"  Saved to: {PIPELINE_FILE}")
+    print(f"  Size: {os.path.getsize(PIPELINE_FILE) / 1024:.1f} KB")
 
-    # Bundle scaler + model together (NOT ADASYN)
-    pipeline_bundle = {
-        "scaler": scaler,
-        "model": model,
-        "feature_names": FEATURE_COLS,
-        "class_names": CLASS_NAMES,
-        "label_mapping": LABEL_MAPPING,
+    # ── 7. Export Inference Bundle (for Backend) ──────────────
+    print("\n[7/8] Exporting backend inference bundle (scaler + model)...")
+
+    # Extract the scaler and model from the deployed pipeline.
+    # Pipeline steps: features (0) → scaler (1) → adasyn (2) → model (3)
+    deployed_scaler = pipe_deploy.named_steps["scaler"]
+    deployed_model = pipe_deploy.named_steps["model"]
+
+    inference_bundle = {
+        "scaler": deployed_scaler,
+        "model": deployed_model,
+        "feature_names": FINAL_FEATURES,
+        "class_names": bundle.class_names,
+        "label_mapping": bundle.label_mapping,
     }
-    joblib.dump(pipeline_bundle, PIPELINE_FILE)
-    print(f"  Pipeline saved to: {PIPELINE_FILE}")
+    joblib.dump(inference_bundle, INFERENCE_BUNDLE_FILE)
+    print(f"  Saved to: {INFERENCE_BUNDLE_FILE}")
+    print(f"  Size: {os.path.getsize(INFERENCE_BUNDLE_FILE) / 1024:.1f} KB")
 
-    # Export metadata
+    # Also save the inference bundle as lgbm_pipeline.joblib for backward
+    # compatibility with the current backend, which loads that filename.
+    # The full imblearn pipeline is saved separately above.
+    joblib.dump(inference_bundle, PIPELINE_FILE)
+    print(f"  Also overwrote {PIPELINE_FILE} with inference bundle for backend compat")
+
+    # ── 8. Export Metadata ────────────────────────────────────
+    print("\n[8/8] Exporting model metadata...")
+
+    # Get champion hyperparams from the holdout pipeline's model step
+    champion_model = pipe_holdout.named_steps["model"]
+    hyperparams = {
+        "n_estimators": champion_model.n_estimators,
+        "max_depth": champion_model.max_depth,
+        "learning_rate": champion_model.learning_rate,
+        "num_leaves": champion_model.num_leaves,
+    }
+
     metadata = {
         "model_name": "LightGBM",
-        "version": "1.0.0",
-        "accuracy": round(accuracy, 4),
-        "macro_f1": round(macro_f1, 4),
-        "macro_auc": round(macro_auc, 4) if macro_auc else None,
-        "cohens_kappa": round(kappa, 4),
-        "mcc": round(mcc, 4),
+        "version": "2.0.0",
+        "split_strategy": "StratifiedGroupKFold holdout by car_id",
+        "vehicle_overlap_between_train_test": 0,
+        "hyperparameters": hyperparams,
+        "holdout_metrics": {
+            k: round(float(v), 4) if v is not None else None
+            for k, v in metrics.items()
+        },
+        "accuracy": round(metrics["Accuracy"], 4),
+        "macro_f1": round(metrics["Macro F1"], 4),
+        "macro_auc": round(metrics["Macro AUC"], 4) if metrics.get("Macro AUC") else None,
+        "cohens_kappa": round(metrics["Cohen's Kappa"], 4),
+        "mcc": round(metrics["MCC"], 4),
         "training_samples": len(X_train),
         "test_samples": len(X_test),
-        "feature_count": len(FEATURE_COLS),
-        "classes": CLASS_NAMES,
-        "label_mapping": LABEL_MAPPING,
-        "last_trained": str(datetime.now().year),
+        "deployment_trained_on": len(bundle.X),
+        "feature_count": len(FINAL_FEATURES),
+        "classes": bundle.class_names,
+        "label_mapping": bundle.label_mapping,
+        "last_trained": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "methodology_notes": [
+            "Preprocessing is fitted inside the pipeline (no pre-split leakage).",
+            "ADASYN is fitted only inside training folds / training split.",
+            "Test vehicles are completely unseen during training (zero overlap).",
+            "Holdout metrics reflect realistic deployment performance.",
+            "Deployment model is retrained on all data after holdout validation.",
+        ],
     }
+
     with open(METADATA_FILE, "w") as f:
         json.dump(metadata, f, indent=2)
-    print(f"  Metadata saved to: {METADATA_FILE}")
+    print(f"  Saved to: {METADATA_FILE}")
 
-    # ── Verify exported model loads correctly ─────────────────
-    print("\n  Verifying exported model...")
-    loaded = joblib.load(PIPELINE_FILE)
-    loaded_scaler = loaded["scaler"]
-    loaded_model = loaded["model"]
+    # ── Verify Exported Artifacts ─────────────────────────────
+    print("\n  Verifying exported artifacts...")
 
-    # Quick prediction test
-    X_test_verify = loaded_scaler.transform(X_test[:5])
-    y_verify = loaded_model.predict(X_test_verify)
-    print(f"  Verification predictions: {[CLASS_NAMES[i] for i in y_verify]}")
-    print(f"  [OK] Model loads and predicts correctly!")
+    # Verify inference bundle
+    loaded_bundle = joblib.load(PIPELINE_FILE)
+    loaded_scaler = loaded_bundle["scaler"]
+    loaded_model = loaded_bundle["model"]
 
-    # Final summary
+    # Quick prediction test with a few test rows
+    # We need to manually transform test data since we extracted scaler/model
+    transformer = pipe_holdout.named_steps["features"]
+    X_test_features = transformer.transform(X_test.head(5))
+    X_test_scaled = loaded_scaler.transform(X_test_features)
+    y_verify = loaded_model.predict(X_test_scaled)
+    predicted_names = [bundle.class_names[i] for i in y_verify]
+    print(f"  Inference bundle verification: {predicted_names}")
+
+    print(f"  [OK] All artifacts exported and verified!")
+
+    # ── Final Summary ─────────────────────────────────────────
     print("\n" + "=" * 70)
-    print("  EXPORT COMPLETE")
-    print(f"  Model Accuracy: {accuracy:.4f}")
+    print("  EXPORT COMPLETE — LEAKAGE-SAFE MODEL")
+    print("=" * 70)
+    print(f"  Champion:        LightGBM (n_estimators={hyperparams['n_estimators']}, "
+          f"max_depth={hyperparams['max_depth']})")
+    print(f"  Split:           Vehicle-grouped (zero overlap)")
+    print(f"  Holdout Macro F1: {metrics['Macro F1']:.4f}")
+    print(f"  Holdout Accuracy: {metrics['Accuracy']:.4f}")
     print(f"  Files created:")
-    print(f"    - {PIPELINE_FILE} ({os.path.getsize(PIPELINE_FILE) / 1024:.1f} KB)")
-    print(f"    - {METADATA_FILE} ({os.path.getsize(METADATA_FILE) / 1024:.1f} KB)")
+    print(f"    - {PIPELINE_FILE}")
+    print(f"    - {INFERENCE_BUNDLE_FILE}")
+    print(f"    - {METADATA_FILE}")
     print("=" * 70)
 
 

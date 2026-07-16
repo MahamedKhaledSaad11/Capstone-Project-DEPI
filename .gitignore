@@ -68,6 +68,11 @@ implementation_plan.md
 Frontend Documentation.md
 Backend and ML Pipeline.md
 cloudflared-windows-amd64.exe
+*.bat
+fleet_augmented.csv
+setup_and_push.bat
+force_reset_and_push.bat
+
 # VS Code
 .vscode/*
 !.vscode/extensions.json
@@ -97,3 +102,7 @@ cloudflared-windows-amd64.exe
 # Windows
 Thumbs.db
 ehthumbs.db
+
+# AI Agents
+.agents/
+scratch/

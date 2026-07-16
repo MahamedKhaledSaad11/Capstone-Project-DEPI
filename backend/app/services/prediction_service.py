@@ -214,55 +214,75 @@ class PredictionService:
         self.model = None
 
     def load_model(self):
-        """Load the exported pipeline (scaler + model) and metadata."""
+        """Load the exported model artifacts and metadata.
+
+        Supports two formats:
+        1. Inference bundle (dict with 'scaler' and 'model' keys)
+        2. Full imblearn Pipeline (extracts scaler and model from named steps)
+        """
         logger.info(f"Loading model from: {self.model_path}")
-        self.pipeline = joblib.load(self.model_path)
-        self.scaler = self.pipeline["scaler"]
-        self.model = self.pipeline["model"]
+        loaded = joblib.load(self.model_path)
+
+        if isinstance(loaded, dict):
+            # Inference bundle format: {"scaler": ..., "model": ..., ...}
+            self.pipeline = loaded
+            self.scaler = loaded["scaler"]
+            self.model = loaded["model"]
+        else:
+            # Full imblearn Pipeline: features → scaler → adasyn → model
+            self.pipeline = loaded
+            self.scaler = loaded.named_steps["scaler"]
+            self.model = loaded.named_steps["model"]
 
         with open(self.metadata_path, "r") as f:
             self.metadata = json.load(f)
 
         logger.info(
             f"Model loaded successfully: {self.metadata['model_name']} "
-            f"v{self.metadata['version']} | "
-            f"{self.metadata['feature_count']} features | "
-            f"Accuracy: {self.metadata['accuracy']}"
+            f"v{self.metadata.get('version', '?')} | "
+            f"{self.metadata.get('feature_count', '?')} features | "
+            f"Macro F1: {self.metadata.get('macro_f1', 'N/A')}"
         )
 
     @property
     def is_loaded(self) -> bool:
         return self.model is not None and self.scaler is not None
 
-    def compute_derived_features(self, inputs: dict) -> dict:
+    def compute_derived_features(self, inputs: list | dict) -> dict:
         """Compute the 13 derived features from 12 raw inputs.
 
-        Rolling feature approximations:
-            roll_mean = current sensor value (stable-state assumption)
-            roll_std  = 0 (no historical data at inference time)
+        If a sequence (list) is provided, calculates rolling mean and std over the sequence.
+        Otherwise, uses the single input with std=0.
         """
-        features = dict(inputs)
+        if isinstance(inputs, dict):
+            sequence = [inputs]
+        else:
+            sequence = inputs
+
+        # Base features come from the LAST item in the sequence
+        current = sequence[-1]
+        features = dict(current)
 
         # 5 engineered interaction features
-        features["power_to_load_ratio"] = inputs["power_kw"] / (inputs["load_kg"] + 1)
-        features["temp_diff_motor_ambient"] = inputs["motor_temp_c"] - inputs["ambient_temp_c"]
-        features["temp_diff_battery_ambient"] = inputs["battery_temp_c"] - inputs["ambient_temp_c"]
-        features["voltage_per_soc"] = inputs["battery_voltage_v"] / (inputs["soc_pct"] + 1)
-        features["speed_x_load"] = inputs["speed_kmh"] * inputs["load_kg"]
+        features["power_to_load_ratio"] = current["power_kw"] / (current["load_kg"] + 1)
+        features["temp_diff_motor_ambient"] = current["motor_temp_c"] - current["ambient_temp_c"]
+        features["temp_diff_battery_ambient"] = current["battery_temp_c"] - current["ambient_temp_c"]
+        features["voltage_per_soc"] = current["battery_voltage_v"] / (current["soc_pct"] + 1)
+        features["speed_x_load"] = current["speed_kmh"] * current["load_kg"]
 
-        # 8 rolling window approximations (no historical data available)
-        features["motor_temp_c_roll_mean"] = inputs["motor_temp_c"]
-        features["motor_temp_c_roll_std"] = 0.0
-        features["battery_temp_c_roll_mean"] = inputs["battery_temp_c"]
-        features["battery_temp_c_roll_std"] = 0.0
-        features["battery_voltage_v_roll_mean"] = inputs["battery_voltage_v"]
-        features["battery_voltage_v_roll_std"] = 0.0
-        features["power_kw_roll_mean"] = inputs["power_kw"]
-        features["power_kw_roll_std"] = 0.0
+        # 8 rolling window features
+        for col in ["motor_temp_c", "battery_temp_c", "battery_voltage_v", "power_kw"]:
+            vals = [item[col] for item in sequence]
+            mean_val = np.mean(vals)
+            # Match pandas ddof=1 for std, and fillna(0) for n=1
+            std_val = np.std(vals, ddof=1) if len(vals) > 1 else 0.0
+            
+            features[f"{col}_roll_mean"] = float(mean_val)
+            features[f"{col}_roll_std"] = float(std_val)
 
         return features
 
-    def predict(self, inputs: dict) -> dict:
+    def predict(self, inputs: list | dict) -> dict:
         """Run full prediction pipeline: feature engineering -> scaling -> inference."""
         if not self.is_loaded:
             raise RuntimeError("Model not loaded. Call load_model() first.")

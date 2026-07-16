@@ -22,10 +22,11 @@ const DEFAULT_INPUTS = {
 
 const usePredictionStore = create((set, get) => ({
   inputs: { ...DEFAULT_INPUTS },
+  sequence: [], // Stores up to 2 previous readings (T-2, T-1)
   result: null,
   isLoading: false,
   error: null,
-  history: [],
+  history: [], // Stores past predictions for UI history
 
   setInput: (key, value) =>
     set((state) => ({
@@ -38,17 +39,34 @@ const usePredictionStore = create((set, get) => ({
   resetInputs: () =>
     set({ inputs: { ...DEFAULT_INPUTS }, result: null, error: null }),
 
+  addToSequence: () => {
+    const { inputs, sequence } = get();
+    if (sequence.length < 2) {
+      set({ sequence: [...sequence, { ...inputs }] });
+    }
+  },
+
+  removeFromSequence: (index) => {
+    const { sequence } = get();
+    set({ sequence: sequence.filter((_, i) => i !== index) });
+  },
+
+  clearSequence: () => set({ sequence: [] }),
+
   runPrediction: async () => {
-    const { inputs } = get();
+    const { inputs, sequence } = get();
     set({ isLoading: true, error: null });
 
     try {
-      const result = await runPrediction(inputs);
+      // Send the sequence plus the current reading (max length 3)
+      const payload = [...sequence, inputs];
+      const result = await runPrediction(payload);
+      
       set((state) => ({
         result,
         isLoading: false,
         history: [
-          { inputs: { ...inputs }, result, timestamp: new Date().toISOString() },
+          { payload, result, timestamp: new Date().toISOString() },
           ...state.history,
         ].slice(0, 10), // keep last 10
       }));

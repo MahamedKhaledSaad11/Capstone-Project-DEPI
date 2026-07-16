@@ -2,15 +2,16 @@
 EVGuard — Prediction Request Schema
 ====================================
 Pydantic v2 model for the POST /api/v1/predict request body.
-Only the 12 raw sensor + temporal inputs are required from the user.
-The 13 derived features are computed server-side.
+Supports both a single dictionary (backward compatibility) 
+or a list of dictionaries (Time-Series Sequence) up to 3 elements.
 """
 
+from typing import List, Union
 from pydantic import BaseModel, Field
 
 
 class PredictionRequest(BaseModel):
-    """Input schema for EV predictive maintenance prediction."""
+    """Input schema for a single EV sensor reading."""
 
     speed_kmh: float = Field(
         ..., ge=0, le=200,
@@ -72,3 +73,6 @@ class PredictionRequest(BaseModel):
         description="Day of week (0=Monday, 6=Sunday)",
         json_schema_extra={"example": 1},
     )
+
+# A request can be either a single reading or a sequence of up to 3 readings.
+TimeSeriesRequest = Union[List[PredictionRequest], PredictionRequest]

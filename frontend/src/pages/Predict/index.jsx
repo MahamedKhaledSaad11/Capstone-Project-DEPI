@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Play, RotateCcw, AlertTriangle, CheckCircle, AlertCircle, XCircle } from "lucide-react";
+import { Play, RotateCcw, AlertTriangle, CheckCircle, AlertCircle, XCircle, Plus } from "lucide-react";
 import Button from "../../components/ui/Button";
 import Card from "../../components/ui/Card";
 import Badge from "../../components/ui/Badge";
@@ -23,7 +23,11 @@ const riskIcons = {
 };
 
 export default function Predict() {
-  const { inputs, result, isLoading, error, setInput, setInputs, resetInputs, predict } = usePrediction();
+  const { 
+    inputs, sequence, result, isLoading, error, 
+    setInput, setInputs, resetInputs, predict,
+    addToSequence, removeFromSequence, clearSequence 
+  } = usePrediction();
   const [activeTab, setActiveTab] = useState("input");
   const [validationErrors, setValidationErrors] = useState({});
 
@@ -108,6 +112,52 @@ export default function Predict() {
             ))}
           </div>
 
+          {/* Sequence History (Time-Series) */}
+          <div className="mb-6 space-y-3">
+            {sequence.length > 0 && (
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-300">
+                  Time-Series Sequence (T-{sequence.length} to T0)
+                </h3>
+                <button onClick={clearSequence} className="text-xs text-danger hover:underline">Clear Sequence</button>
+              </div>
+            )}
+            <div className="flex gap-3">
+              <AnimatePresence>
+                {sequence.map((seq, i) => (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    className="flex-1 bg-bg-tertiary border border-white/10 rounded-lg p-3 relative max-w-[200px]"
+                  >
+                    <button
+                      onClick={() => removeFromSequence(i)}
+                      className="absolute top-2 right-2 text-slate-500 hover:text-danger"
+                    >
+                      <XCircle className="w-4 h-4" />
+                    </button>
+                    <p className="text-xs font-semibold text-accent mb-1">
+                      T-{sequence.length - i} (History)
+                    </p>
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-slate-400">
+                      <span>Spd: {seq.speed_kmh}</span>
+                      <span>Volt: {seq.battery_voltage_v}</span>
+                      <span>SoC: {seq.soc_pct}</span>
+                      <span>Tmp: {seq.battery_temp_c}</span>
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+            {sequence.length > 0 && (
+              <p className="text-xs text-slate-500">
+                The model will calculate rolling features across this sequence to accurately detect sudden anomalies.
+              </p>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {/* Input Form */}
             <Card hover={false} padding="p-0">
@@ -147,8 +197,19 @@ export default function Predict() {
               </div>
               <div className="p-6 border-t border-white/5 flex gap-3">
                 <Button onClick={handlePredict} disabled={isLoading} className="flex-1">
-                  {isLoading ? <LoadingSpinner size="sm" text="" /> : <><Play className="w-4 h-4" /> Predict</>}
+                  {isLoading ? <LoadingSpinner size="sm" text="" /> : <><Play className="w-4 h-4" /> {sequence.length > 0 ? "Predict Sequence" : "Predict"}</>}
                 </Button>
+                {sequence.length < 2 && (
+                  <Button 
+                    variant="secondary" 
+                    onClick={() => {
+                      if (validateInputs()) addToSequence();
+                    }} 
+                    className="flex-1 border-accent/30 text-accent hover:bg-accent/10"
+                  >
+                    <Plus className="w-4 h-4" /> Add to Sequence
+                  </Button>
+                )}
                 <Button variant="secondary" onClick={handleReset}>
                   <RotateCcw className="w-4 h-4" />
                 </Button>

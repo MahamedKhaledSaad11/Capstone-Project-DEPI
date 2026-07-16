@@ -7,12 +7,16 @@ import usePredictionStore from "../store/predictionStore";
 export default function usePrediction() {
   const {
     inputs,
+    sequence,
     result,
     isLoading,
     error,
     setInput,
     setInputs,
     resetInputs,
+    addToSequence,
+    removeFromSequence,
+    clearSequence,
     runPrediction,
     clearResult,
     clearError,
@@ -20,16 +24,21 @@ export default function usePrediction() {
 
   return {
     inputs,
+    sequence,
     result,
     isLoading,
     error,
     setInput,
     setInputs,
     resetInputs,
+    addToSequence,
+    removeFromSequence,
+    clearSequence,
     predict: runPrediction,
     reset: () => {
       clearResult();
       clearError();
+      clearSequence();
     },
   };
 }
