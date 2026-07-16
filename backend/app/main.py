@@ -29,6 +29,8 @@ logging.basicConfig(
 logger = logging.getLogger("evguard")
 
 
+import asyncio
+
 # ── Lifespan (startup/shutdown) ───────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,19 +39,29 @@ async def lifespan(app: FastAPI):
     logger.info("EVGuard API — Starting up...")
     logger.info(f"Environment: {ENV}")
 
-    # Load model
+    # Setup service
     service = PredictionService(
         model_path=MODEL_PATH,
         metadata_path=METADATA_PATH,
     )
-    service.load_model()
-
+    
     # Store on app state for request access
     app.state.prediction_service = service
     app.state.start_time = time.time()
 
+    # Load model in the background so Uvicorn can start responding to Healthchecks immediately
+    def background_load():
+        try:
+            service.load_model()
+            logger.info("Background model loading complete!")
+        except Exception as e:
+            logger.error(f"Failed to load model: {e}")
+
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, background_load)
+
     logger.info("=" * 60)
-    logger.info("EVGuard API ready to serve predictions!")
+    logger.info("EVGuard API ready to serve requests (model loading in background)!")
     logger.info("=" * 60)
 
     yield  # App runs here
