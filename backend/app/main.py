@@ -114,7 +114,7 @@ app.include_router(model_info.router, prefix="/api/v1", tags=["Model Info"])
 
 
 # ── Root Endpoint ─────────────────────────────────────────
-@app.get("/", tags=["Root"])
+@app.api_route("/", methods=["GET", "OPTIONS"], tags=["Root"])
 async def root():
     """API root — basic info."""
     return {
